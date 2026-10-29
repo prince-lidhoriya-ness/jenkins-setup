@@ -1,0 +1,45 @@
+# ---------------------------------------------------------------------------
+# Thresholds for every gate.  THE ONLY FILE you normally need to tune.
+#   max: value must be <= limit      min: value must be >= limit
+# Phases whose name starts with a "baseline_phases" prefix (default: "before")
+# only RECORD numbers - they never fail the run.  Every other phase
+# (after, after-iter3, ...) is ENFORCED: any failed check => exit code 1.
+# ---------------------------------------------------------------------------
+baseline_phases: [before]
+
+gate1:                       # static analysis + dependency/IaC security
+  tool_errors:               {max: 0}   # a scanner that did not run = failure
+  sonar_quality_gate_failed: {max: 0}   # SonarQube's own "Sonar way" verdict
+  sonar_bugs:                {max: 0}
+  sonar_vulnerabilities:     {max: 0}
+  sonar_security_hotspots:   {max: 5}
+  sonar_code_smells:         {max: 50}
+  sonar_duplication_pct:     {max: 5}
+  sonar_security_rating:     {max: 1}   # 1 = A ... 5 = E
+  sonar_reliability_rating:  {max: 1}
+  sonar_maintainability_rating: {max: 1}
+  # sonar_coverage_pct:      {min: 60}  # enable once tests+coverage exist
+  semgrep_high:              {max: 0}
+  semgrep_medium:            {max: 10}
+  trivy_critical:            {max: 0}
+  trivy_high:                {max: 0}
+  trivy_misconfig_high:      {max: 0}
+
+gate2:                       # secrets, credentials, PII/PHI
+  tool_errors:               {max: 0}
+  secrets_found:             {max: 0}   # gitleaks
+  hardcoded_credentials:     {max: 0}   # password = "..." etc.
+  pii_findings:              {max: 0}   # SSN, Aadhaar, PAN, card, e-mail, phone, DOB
+  pii_in_logs:               {max: 0}   # logging of PII fields
+
+gate3:                       # Claude spend (cumulative, from results/cost_ledger.jsonl)
+  total_usd:                 {max: 25.0}
+  iterations:                {max: 10}
+  max_usd_per_iteration:     {max: 5.0}
+  # total_tokens:            {max: 5000000}
+
+gate4:                       # functional evals against the running app
+  tool_errors:               {max: 0}
+  pass_rate:                 {min: 0.95}
+  critical_failures:         {max: 0}
+  p95_latency_ms:            {max: 1500}

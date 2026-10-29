@@ -1,0 +1,8 @@
+results/*
+!results/.gitkeep
+
+# environment-specific corporate TLS-inspection CA (not portable across machines)
+certs/corporate-ca.pem
+runner/corporate-ca.pem
+samples/legacy-app/corporate-ca.pem
+samples/modernized-app/corporate-ca.pem

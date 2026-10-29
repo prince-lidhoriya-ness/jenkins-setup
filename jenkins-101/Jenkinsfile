@@ -1,0 +1,149 @@
+// CI/CD: Build -> Test -> Quality Gates (quality-gates/run_gates.sh, gates 1-4) -> Deliver.
+// Deliver only runs when every enforced gate meets quality-gates/thresholds.yaml.
+pipeline {
+    agent none
+    parameters {
+        choice(name: 'GATE_PHASE', choices: ['after', 'before'],
+               description: 'after = ENFORCED (build fails on any missed threshold). before = BASELINE (records numbers, never fails).')
+        string(name: 'GATES', defaultValue: '1,2,3,4',
+               description: '1 static/security (SonarQube, Semgrep, Trivy), 2 secrets/PII, 3 Claude cost, 4 functional evals')
+        string(name: 'SCAN_DIR', defaultValue: 'myapp',
+               description: 'Folder (relative to the repo root) the gates scan')
+        string(name: 'APP_COMPOSE_FILE', defaultValue: '',
+               description: 'Compose file that starts the app for gate 4, e.g. quality-gates/samples/docker-compose.yml. Empty = gate 4 is skipped.')
+        string(name: 'APP_COMPOSE_PROFILE', defaultValue: '',
+               description: 'Optional compose profile for APP_COMPOSE_FILE, e.g. modernized')
+        booleanParam(name: 'SKIP_SONARQUBE', defaultValue: false,
+                     description: 'Fast mode: skip SonarQube (quick tests only, not for the real pipeline)')
+        string(name: 'CORPORATE_CA_CREDENTIAL', defaultValue: '',
+               description: 'ID of a "Secret file" credential with the corporate TLS-inspection CA (e.g. Netskope). Empty = system CAs only.')
+    }
+    options {
+        timeout(time: 90, unit: 'MINUTES')      // first SonarQube start + Trivy DB download can take a while
+        disableConcurrentBuilds()               // builds share one SonarQube and the results/ folder
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+    }
+    triggers {
+        pollSCM '* * * * *'
+    }
+    stages {
+        stage('Build & Test') {
+            agent {
+                node {
+                    label 'docker-agent-python'
+                }
+            }
+            stages {
+                stage('Build') {
+                    steps {
+                        echo "Building.."
+                        sh '''
+                        cd myapp
+                        pip install -r requirements.txt
+                        '''
+                    }
+                }
+                stage('Test') {
+                    steps {
+                        echo "Testing.."
+                        sh '''
+                        cd myapp
+                        python3 hello.py
+                        python3 hello.py --name=Brad
+                        '''
+                    }
+                }
+            }
+        }
+        stage('Quality Gates') {
+            // Needs the docker CLI + compose plugin (see Dockerfile) and a daemon that sees the workspace at the
+            // same path - the docker:dind container that also mounts jenkins-data (see readme.md).
+            agent {
+                label 'built-in'
+            }
+            environment {
+                SKIP_SONAR = "${params.SKIP_SONARQUBE ? '1' : '0'}"     // run_gates.sh expects 1/0, not true/false
+            }
+            steps {
+                script {
+                    def gates = params.GATES.tokenize(',').collect { it.trim() }.findAll { it }
+                    if (gates.contains('4') && !params.APP_COMPOSE_FILE?.trim()) {
+                        echo 'WARNING: APP_COMPOSE_FILE is empty - skipping gate 4 (functional evals need a running app)'
+                        gates = gates.findAll { it != '4' }
+                    }
+                    env.QG_GATES = gates.join(',')
+
+                    // the CA files are git-ignored, so a fresh checkout has none; runner/Dockerfile, Semgrep and Trivy
+                    // all need one. Build it from the system CAs plus the optional corporate CA.
+                    def prepareCerts = '''
+                        cd quality-gates
+                        mkdir -p certs
+                        cat /etc/ssl/certs/ca-certificates.crt ${CORP_CA:+"$CORP_CA"} > certs/corporate-ca.pem
+                        for d in runner samples/legacy-app samples/modernized-app; do cp certs/corporate-ca.pem "$d/"; done
+                    '''
+                    if (params.CORPORATE_CA_CREDENTIAL?.trim()) {
+                        withCredentials([file(credentialsId: params.CORPORATE_CA_CREDENTIAL.trim(), variable: 'CORP_CA')]) {
+                            sh prepareCerts
+                        }
+                    } else {
+                        sh prepareCerts
+                    }
+
+                    if (gates.contains('4')) {
+                        sh '''
+                        docker compose -f "$APP_COMPOSE_FILE" ${APP_COMPOSE_PROFILE:+--profile "$APP_COMPOSE_PROFILE"} up -d --build
+                        '''
+                    }
+
+                    def rc = sh(returnStatus: true, script: '''
+                        export TARGET_DIR="$WORKSPACE/$SCAN_DIR"
+                        [ -d "$TARGET_DIR" ] || { echo "SCAN_DIR '$SCAN_DIR' not found in the repo"; exit 2; }
+                        bash quality-gates/run_gates.sh "$GATE_PHASE" "$QG_GATES"
+                    ''')
+
+                    // results/ is git-ignored and survives in the workspace, so a baseline from an earlier
+                    // `before` build is compared against every enforced run
+                    sh '''
+                    if [ "$GATE_PHASE" != before ] && [ -f quality-gates/results/before/summary.json ]; then
+                        bash quality-gates/run_gates.sh compare before "$GATE_PHASE" && cat quality-gates/results/comparison.md
+                    fi
+                    cat "quality-gates/results/$GATE_PHASE/feedback.md" || true
+                    '''
+
+                    if (rc == 1) {
+                        error "Quality gates FAILED (phase ${params.GATE_PHASE}) - see feedback.md in the build artifacts"
+                    } else if (rc != 0) {
+                        error "Quality gates setup error (exit ${rc}) - is the docker daemon reachable and does it mount jenkins-data?"
+                    }
+                }
+            }
+            post {
+                always {
+                    sh '''
+                    if [ -n "$APP_COMPOSE_FILE" ] && echo ",$QG_GATES," | grep -q ',4,'; then
+                        docker compose -f "$APP_COMPOSE_FILE" ${APP_COMPOSE_PROFILE:+--profile "$APP_COMPOSE_PROFILE"} down || true
+                    fi
+                    # gate containers write results/ as root; hand it back to the jenkins user so the workspace stays cleanable
+                    cd quality-gates && docker compose run -T --rm --entrypoint chown runner -R "$(id -u):$(id -g)" /work/results || true
+                    '''
+                    archiveArtifacts artifacts: 'quality-gates/results/**',
+                                     excludes: 'quality-gates/results/.sonar_token',
+                                     allowEmptyArchive: true
+                }
+            }
+        }
+        stage('Deliver') {
+            agent {
+                node {
+                    label 'docker-agent-python'
+                }
+            }
+            steps {
+                echo 'Deliver....'
+                sh '''
+                echo "doing delivery stuff.."
+                '''
+            }
+        }
+    }
+}

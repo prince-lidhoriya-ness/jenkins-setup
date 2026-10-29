@@ -1,0 +1,5 @@
+# Values matching these are ignored by the PII scanner (fake / safe data).
+email_domains: [example.com, example.org, example.net, test.com, localhost, noreply.local]
+skip_dirs: [.git, node_modules, target, build, dist, __pycache__, .venv, venv, .idea, .gradle, .mvn, vendor]
+skip_extensions: [.png, .jpg, .jpeg, .gif, .ico, .pdf, .zip, .jar, .war, .class, .gz, .woff, .woff2, .ttf, .lock, .min.js, .map]
+skip_files: [package-lock.json, yarn.lock, pnpm-lock.yaml, poetry.lock]

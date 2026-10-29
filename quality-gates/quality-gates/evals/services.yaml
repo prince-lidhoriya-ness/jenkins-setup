@@ -1,0 +1,8 @@
+# Base URL of every service the evals call (as seen from INSIDE the runner container).
+# Docker Desktop: host.docker.internal reaches ports published on your laptop.
+# On Jenkins / same compose network: use container names, e.g. http://patient-service:8080
+services:
+  patient-service: http://host.docker.internal:8080
+  # appointment-service: http://host.docker.internal:8081
+  # billing-service:     http://host.docker.internal:8082
+  # ... add all 10 services here

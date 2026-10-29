@@ -1,0 +1,54 @@
+# One file per service. Cases run in order, so earlier cases can `save` values for later ones ({{var}}).
+# critical: true => any failure counts in `critical_failures` (gate4 threshold = 0).
+service: patient-service
+cases:
+  - id: health
+    name: Service is healthy
+    critical: true
+    request: {method: GET, path: /health}
+    expect: {status: 200, json: {status: ok}}
+
+  - id: list-patients
+    name: Patients list returns an array
+    critical: true
+    request: {method: GET, path: /patients}
+    expect: {status: 200, json: {"0.id": {exists: true}, "0.name": {type: str}}}
+
+  - id: get-patient
+    name: Get patient 1
+    request: {method: GET, path: /patients/1}
+    expect: {status: 200, json: {id: 1, name: {type: str}}}
+
+  - id: create-patient
+    name: Create a patient
+    critical: true
+    request: {method: POST, path: /patients, body: {name: Eval Patient, email: eval@example.com}}
+    expect: {status: 201, json: {id: {exists: true}}}
+    save: {new_id: id}
+
+  - id: fetch-created
+    name: Created patient can be fetched
+    request: {method: GET, path: "/patients/{{new_id}}"}
+    expect: {status: 200, json: {name: Eval Patient}}
+
+  - id: missing-patient
+    name: Unknown patient -> 404 (not 500)
+    request: {method: GET, path: /patients/999999}
+    expect: {status: 404}
+
+  - id: validation
+    name: Empty name is rejected with 400
+    request: {method: POST, path: /patients, body: {name: ""}}
+    expect: {status: 400}
+
+  - id: no-ssn-leak
+    name: API never exposes SSN
+    critical: true
+    request: {method: GET, path: /patients}
+    expect: {status: 200, json: {"0.ssn": {absent: true}}}
+
+  - id: sql-injection
+    name: SQL injection attempt is not answered with data
+    critical: true
+    request: {method: GET, path: "/patients/1%20OR%201=1"}
+    expect: {status: [400, 404]}

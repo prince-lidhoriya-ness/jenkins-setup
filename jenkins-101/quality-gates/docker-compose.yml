@@ -1,0 +1,81 @@
+# Everything runs in containers - the only prerequisite is Docker Desktop.
+services:
+  runner:                     # our own python glue: parsers, PII scan, evals, cost, compare
+    build: ./runner
+    image: hms-gates-runner
+    profiles: [tools]
+    working_dir: /work
+    environment:
+      SKIP_SONAR: ${SKIP_SONAR:-0}
+      SONAR_HOST_URL: http://sonarqube:9000
+      SONAR_PROJECT_KEY: ${SONAR_PROJECT_KEY:-hms}
+      SONAR_ADMIN_PASSWORD: ${SONAR_ADMIN_PASSWORD:-Gates#Admin123456}
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    volumes:
+      - .:/work
+      - type: bind
+        source: ${TARGET_DIR:-./samples/legacy-app}
+        target: /src
+        read_only: true
+
+  sonarqube:                  # started on demand, data kept in a named volume
+    image: sonarqube:community
+    environment:
+      SONAR_ES_BOOTSTRAP_CHECKS_DISABLE: "true"
+    ports: ["9000:9000"]
+    volumes: [sonar-data:/opt/sonarqube/data, sonar-ext:/opt/sonarqube/extensions]
+
+  sonar-scanner:
+    image: sonarsource/sonar-scanner-cli:latest
+    profiles: [tools]
+    environment:
+      SONAR_HOST_URL: http://sonarqube:9000
+      SONAR_TOKEN: ${SONAR_TOKEN:-}
+    volumes:
+      - type: bind
+        source: ${TARGET_DIR:-./samples/legacy-app}
+        target: /usr/src
+        read_only: true
+
+  semgrep:
+    image: semgrep/semgrep:latest
+    profiles: [tools]
+    environment:                      # trust optional corporate TLS-inspection CA for the registry pull
+      SSL_CERT_FILE: /certs/corporate-ca.pem
+      REQUESTS_CA_BUNDLE: /certs/corporate-ca.pem
+    volumes:
+      - ./results:/results
+      - ./certs:/certs:ro
+      - type: bind
+        source: ${TARGET_DIR:-./samples/legacy-app}
+        target: /src
+        read_only: true
+
+  trivy:
+    image: aquasec/trivy:latest
+    profiles: [tools]
+    environment:                      # trust optional corporate TLS-inspection CA for the vuln-db pull
+      SSL_CERT_FILE: /certs/corporate-ca.pem
+    volumes:
+      - trivy-cache:/root/.cache
+      - ./results:/results
+      - ./certs:/certs:ro
+      - type: bind
+        source: ${TARGET_DIR:-./samples/legacy-app}
+        target: /src
+        read_only: true
+
+  gitleaks:
+    image: ghcr.io/gitleaks/gitleaks:latest
+    profiles: [tools]
+    volumes:
+      - ./results:/results
+      - type: bind
+        source: ${TARGET_DIR:-./samples/legacy-app}
+        target: /src
+        read_only: true
+
+volumes:
+  sonar-data:
+  sonar-ext:
+  trivy-cache:

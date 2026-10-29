@@ -1,0 +1,28 @@
+// Skeleton showing where the gates plug in. Claude step belongs to teammate 3.
+pipeline {
+  agent any
+  environment { TARGET_DIR = "${WORKSPACE}/hms-app" }       // app source to scan
+  stages {
+    stage('Start app (before)')  { steps { sh 'docker compose -f hms-app/docker-compose.yml up -d --build' } }
+    stage('Gates BEFORE')        { steps { sh 'cd quality-gates && ./run_gates.sh before' } }   // baseline: never fails
+    stage('Modernize loop') {
+      steps {
+        sh '''
+          cd quality-gates && ./run_gates.sh cost-reset
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            ./run_gates.sh cost-check || { echo "budget exhausted"; break; }       # gate 3 pre-flight (exit 42)
+            CAP=$(./run_gates.sh cost-remaining)
+            claude -p "Modernize the app. Fix every item in quality-gates/results/after/feedback.md if present." \
+                   --output-format json --max-budget-usd "$CAP" | ./run_gates.sh cost-record modernize
+            # rebuild/restart the modernized app here, then:
+            ./run_gates.sh after && break                                           # all gates met thresholds
+          done
+        '''
+      }
+    }
+    stage('Report') {
+      steps { sh 'cd quality-gates && ./run_gates.sh compare before after'
+              archiveArtifacts 'quality-gates/results/**' }
+    }
+  }
+}
